@@ -1,0 +1,61 @@
+{
+  "categories": {
+    "Office Supplies": {
+      "limit": 25000,
+      "po_required": false
+    },
+    "IT Equipment": {
+      "limit": 500000,
+      "po_required": true
+    },
+    "Travel": {
+      "limit": 60000,
+      "po_required": false
+    },
+    "Catering": {
+      "limit": 40000,
+      "po_required": false
+    },
+    "Logistics": {
+      "limit": 150000,
+      "po_required": true
+    },
+    "Professional Services": {
+      "limit": 1000000,
+      "po_required": true
+    },
+    "Facilities": {
+      "limit": 300000,
+      "po_required": true
+    },
+    "Marketing": {
+      "limit": 200000,
+      "po_required": false
+    }
+  },
+  "approval_ladder": [
+    {
+      "role": "Team Manager",
+      "max_amount": 10000
+    },
+    {
+      "role": "Department Head",
+      "max_amount": 100000
+    },
+    {
+      "role": "Finance Controller",
+      "max_amount": 1000000
+    },
+    {
+      "role": "CFO",
+      "max_amount": null
+    }
+  ],
+  "duplicate_matching": {
+    "fuzzy_similarity_threshold": 0.9,
+    "amount_tolerance_percent": 1,
+    "date_window_days": 7
+  },
+  "po_tolerance_percent": 5,
+  "confidence_threshold_auto_flag": 0.8
+}

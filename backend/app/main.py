@@ -3,11 +3,20 @@ Main FastAPI entrypoint for the AP Auditor Backend Application.
 Provides RESTful APIs for invoice auditing, exception review workflows, audit trails, and reporting.
 """
 
+from pathlib import Path
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import audit, chat, exceptions, invoices, stats
+# Load environment variables (.env in backend or workspace root)
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(dotenv_path=_env_path)
+else:
+    load_dotenv()
+
+from .api import audit, chat, config, exceptions, invoices, reports, stats
 from .db.database import init_db
 
 
@@ -46,6 +55,8 @@ app.include_router(invoices.router)
 app.include_router(exceptions.router)
 app.include_router(audit.router)
 app.include_router(stats.router)
+app.include_router(reports.router)
+app.include_router(config.router)
 app.include_router(chat.router)
 
 

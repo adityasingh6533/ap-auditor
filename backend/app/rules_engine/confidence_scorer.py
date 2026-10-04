@@ -5,6 +5,7 @@ Synthesizes individual rule checks into calibrated confidence scores, exception 
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from .config_loader import get_confidence_threshold_auto_flag
 
 
 @dataclass
@@ -28,7 +29,7 @@ class ScoredResult:
 def score_invoice_exceptions(
     invoice_id: str,
     triggered_checks: List[Dict[str, Any]],
-    threshold_auto_flag: float = 0.80,
+    threshold_auto_flag: Optional[float] = None,
 ) -> ScoredResult:
     """
     Combines rule violation flags for a single invoice to compute an aggregate confidence score and decision status.
@@ -39,9 +40,15 @@ def score_invoice_exceptions(
         * Checks are scored based on certainty (Exact Duplicate / Bank Mismatch / Missing Field = 0.85-0.98;
           Fuzzy Duplicate / Limits / Approvals = 0.50-0.85 scaled).
         * Aggregate confidence reflects the strongest and combined signals.
-        * If confidence >= threshold_auto_flag (0.80): "FLAGGED_AUTO"
+        * If confidence >= threshold_auto_flag (default from config, e.g. 0.80): "FLAGGED_AUTO"
         * If confidence < threshold_auto_flag: "NEEDS_HUMAN_REVIEW"
     """
+    active_threshold = (
+        threshold_auto_flag
+        if threshold_auto_flag is not None
+        else get_confidence_threshold_auto_flag()
+    )
+
     if not triggered_checks:
         return ScoredResult(
             invoice_id=invoice_id,
@@ -52,8 +59,6 @@ def score_invoice_exceptions(
         )
 
     # Calculate aggregate confidence
-    # Near-certain checks have high base confidence (>= 0.85)
-    # Scaled checks have medium confidence (0.50 - 0.85)
     confidences = [check.get("base_confidence", 0.70) for check in triggered_checks]
     max_confidence = max(confidences)
 
@@ -66,7 +71,7 @@ def score_invoice_exceptions(
     final_score = round(combined_confidence, 3)
 
     # Determine status
-    if final_score >= threshold_auto_flag:
+    if final_score >= active_threshold:
         status = "FLAGGED_AUTO"
     else:
         status = "NEEDS_HUMAN_REVIEW"

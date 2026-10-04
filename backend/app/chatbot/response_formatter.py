@@ -97,4 +97,13 @@ def format_response(intent: str, status: str, data: Optional[Dict[str, Any]]) ->
         log_id = data.get("log_id", "")
         return f"Got it, **{inv_id}** has been rejected and logged to the immutable audit trail (Log ID #{log_id})."
 
+    # 6. Export Report
+    if intent == "EXPORT_REPORT":
+        download_url = data.get("download_url", "/api/reports/export") if data else "/api/reports/export"
+        return (
+            "📊 **AP Audit Exception Report Ready**\n\n"
+            f"You can download the full exceptions report here: [Download Report]({download_url})\n\n"
+            "This report includes total processed invoices, pass/flag counts, and itemized evidence for every flagged item."
+        )
+
     return "Your request has been handled successfully."

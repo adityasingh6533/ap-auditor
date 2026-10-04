@@ -39,6 +39,14 @@ export interface InvoiceException {
   reason_text: string;
   matched_reference: string | null;
   processed_at: string;
+  matched_invoice?: {
+    invoice_id: string;
+    vendor_name: string;
+    amount: number;
+    category: string;
+    status: string;
+    processed_at?: string;
+  } | null;
 }
 
 export interface AuditLogEntry {
@@ -48,6 +56,22 @@ export interface AuditLogEntry {
   performed_by: string;
   reason: string;
   timestamp: string;
+  integrity_hash?: string;
+}
+
+export interface AuditVerifyResponse {
+  status: string;
+  total_records_checked: number;
+  verified_clean: number;
+  tampered_count: number;
+  tampered_records: Array<{
+    log_id: number;
+    invoice_id: string;
+    action: string;
+    stored_hash: string;
+    expected_hash: string;
+  }>;
+  message: string;
 }
 
 export interface UploadSummary {
@@ -113,3 +137,26 @@ export const fetchAuditLogs = async (limit = 50): Promise<AuditLogEntry[]> => {
   });
   return data;
 };
+
+export const verifyAuditLogs = async (): Promise<AuditVerifyResponse> => {
+  const { data } = await api.get<AuditVerifyResponse>('/api/audit-logs/verify');
+  return data;
+};
+
+// ── Reports ────────────────────────────────────────────────────────────────
+
+export const downloadReport = async (format: 'pdf' | 'csv' = 'pdf'): Promise<void> => {
+  const response = await api.get(`/api/reports/export`, {
+    params: { format },
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', `ap_exception_report.${format}`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+

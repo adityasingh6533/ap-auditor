@@ -7,10 +7,10 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 import pandas as pd
 from rapidfuzz import fuzz
-from .constants import (
-    DUPLICATE_DATE_WINDOW_DAYS,
-    FUZZY_VENDOR_SIMILARITY_THRESHOLD,
-    FUZZY_AMOUNT_TOLERANCE_PERCENT,
+from .config_loader import (
+    get_duplicate_date_window_days,
+    get_fuzzy_vendor_similarity_threshold,
+    get_fuzzy_amount_tolerance_percent,
 )
 
 
@@ -52,8 +52,17 @@ class DuplicateMatcher:
     to perform efficient duplicate detection across large datasets.
     """
 
-    def __init__(self, df: pd.DataFrame):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        date_window_days: Optional[int] = None,
+        fuzzy_similarity_threshold: Optional[float] = None,
+        fuzzy_amount_tolerance_percent: Optional[float] = None,
+    ):
         self.records: List[Dict[str, Any]] = []
+        self.date_window_days = date_window_days
+        self.fuzzy_similarity_threshold = fuzzy_similarity_threshold
+        self.fuzzy_amount_tolerance_percent = fuzzy_amount_tolerance_percent
         self._prepare_records(df)
 
     def _prepare_records(self, df: pd.DataFrame) -> None:
@@ -92,6 +101,23 @@ class DuplicateMatcher:
         if curr_amt is None or curr_dt is None or not curr_vendor:
             return flags
 
+        # Resolve active dynamic thresholds
+        window_days = (
+            self.date_window_days
+            if self.date_window_days is not None
+            else get_duplicate_date_window_days()
+        )
+        sim_threshold = (
+            self.fuzzy_similarity_threshold
+            if self.fuzzy_similarity_threshold is not None
+            else get_fuzzy_vendor_similarity_threshold()
+        )
+        amt_tolerance_pct = (
+            self.fuzzy_amount_tolerance_percent
+            if self.fuzzy_amount_tolerance_percent is not None
+            else get_fuzzy_amount_tolerance_percent()
+        )
+
         exact_matches: List[Dict[str, Any]] = []
         fuzzy_matches: List[Dict[str, Any]] = []
 
@@ -113,13 +139,13 @@ class DuplicateMatcher:
             if not (cand_dt < curr_dt or (cand_dt == curr_dt and cand_id < curr_id)):
                 continue
 
-            # Check date window (10 days)
+            # Check date window
             days_diff = (curr_dt - cand_dt).days
-            if days_diff > DUPLICATE_DATE_WINDOW_DAYS or days_diff < 0:
+            if days_diff > window_days or days_diff < 0:
                 continue
 
             # 1. Exact Duplicate Check:
-            # Same vendor (case-insensitive), same category, same amount within 0.01, within 10 days
+            # Same vendor (case-insensitive), same category, same amount within 0.01, within window
             if (
                 curr_vendor == cand_vendor
                 and curr_cat == cand_cat
@@ -136,16 +162,16 @@ class DuplicateMatcher:
                 break
 
             # 2. Fuzzy Duplicate Check:
-            # Same category, vendor similarity >= 90%, amount within 1%, within 7 days
+            # Same category, vendor similarity >= threshold, amount within tolerance, within window
             if curr_cat == cand_cat:
                 max_amt = max(curr_amt, cand_amt)
                 if max_amt <= 0:
                     continue
                 amt_diff_pct = abs(curr_amt - cand_amt) / max_amt
 
-                if amt_diff_pct <= FUZZY_AMOUNT_TOLERANCE_PERCENT:
+                if amt_diff_pct <= amt_tolerance_pct:
                     similarity = fuzz.ratio(curr_vendor, cand_vendor)
-                    if similarity >= FUZZY_VENDOR_SIMILARITY_THRESHOLD:
+                    if similarity >= sim_threshold:
                         fuzzy_matches.append({
                             "matched_invoice_id": cand_id,
                             "matched_vendor": cand_vendor_raw,
@@ -182,8 +208,8 @@ class DuplicateMatcher:
             for match in fuzzy_matches:
                 sim = match["similarity_score"]
                 amt_pct = match["amount_diff_percent"]
-                sim_factor = (sim - FUZZY_VENDOR_SIMILARITY_THRESHOLD) / (100.0 - FUZZY_VENDOR_SIMILARITY_THRESHOLD + 1e-5)
-                amt_factor = 1.0 - (amt_pct / (FUZZY_AMOUNT_TOLERANCE_PERCENT * 100.0))
+                sim_factor = (sim - sim_threshold) / (100.0 - sim_threshold + 1e-5)
+                amt_factor = 1.0 - (amt_pct / (amt_tolerance_pct * 100.0))
                 confidence = 0.65 + 0.12 * sim_factor + 0.08 * max(0.0, amt_factor)
 
                 flags.append({

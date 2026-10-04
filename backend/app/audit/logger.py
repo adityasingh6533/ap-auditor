@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import sqlite3
 from typing import Any, Dict, List, Optional
 from ..db.database import get_connection, init_db
+from ..db.models import compute_audit_hash
 
 
 def _extract_invoice_fields(result_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -130,14 +131,21 @@ def log_decision(
     conn: Optional[sqlite3.Connection] = None,
 ) -> int:
     """
-    Writes a row to the 'audit_log' table. Returns the created log_id.
+    Writes a row to the 'audit_log' table with cryptographic SHA-256 integrity hash.
+    Returns the created log_id.
     """
     ts = timestamp or datetime.now(timezone.utc).isoformat()
+    clean_inv_id = str(invoice_id).strip()
+    clean_action = str(action).strip()
+    clean_performed_by = str(performed_by).strip()
+    clean_reason = reason or ""
+    integrity_hash = compute_audit_hash(clean_inv_id, clean_action, clean_performed_by, clean_reason, ts)
+
     query = """
-    INSERT INTO audit_log (invoice_id, action, performed_by, reason, timestamp)
-    VALUES (?, ?, ?, ?, ?);
+    INSERT INTO audit_log (invoice_id, action, performed_by, reason, timestamp, integrity_hash)
+    VALUES (?, ?, ?, ?, ?, ?);
     """
-    params = (str(invoice_id).strip(), str(action).strip(), str(performed_by).strip(), reason or "", ts)
+    params = (clean_inv_id, clean_action, clean_performed_by, clean_reason, ts, integrity_hash)
 
     should_close = False
     if conn is None:
@@ -205,27 +213,26 @@ def log_decisions_batch(
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """
-    Writes multiple audit log entries in a single transaction.
+    Writes multiple audit log entries in a single transaction with cryptographic integrity hashes.
     Each item in decisions should have: invoice_id, action, performed_by, and optional reason, timestamp.
     """
     if not decisions:
         return
 
     query = """
-    INSERT INTO audit_log (invoice_id, action, performed_by, reason, timestamp)
-    VALUES (?, ?, ?, ?, ?);
+    INSERT INTO audit_log (invoice_id, action, performed_by, reason, timestamp, integrity_hash)
+    VALUES (?, ?, ?, ?, ?, ?);
     """
     now_ts = datetime.now(timezone.utc).isoformat()
-    params_list = [
-        (
-            str(d.get("invoice_id", "")).strip(),
-            str(d.get("action", "")).strip(),
-            str(d.get("performed_by", "SYSTEM")).strip(),
-            d.get("reason", "") or "",
-            d.get("timestamp") or now_ts,
-        )
-        for d in decisions
-    ]
+    params_list = []
+    for d in decisions:
+        inv = str(d.get("invoice_id", "")).strip()
+        act = str(d.get("action", "")).strip()
+        perf = str(d.get("performed_by", "SYSTEM")).strip()
+        rsn = d.get("reason", "") or ""
+        t_stamp = d.get("timestamp") or now_ts
+        h = compute_audit_hash(inv, act, perf, rsn, t_stamp)
+        params_list.append((inv, act, perf, rsn, t_stamp, h))
 
     should_close = False
     if conn is None:

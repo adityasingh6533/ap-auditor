@@ -52,7 +52,33 @@ def get_exceptions(
 
         cursor = conn.execute(query, params)
         rows = cursor.fetchall()
-        return [dict(r) for r in rows]
+
+        matched_ids = [
+            r["matched_reference"].strip()
+            for r in rows
+            if r["matched_reference"] and str(r["matched_reference"]).strip().startswith("INV-")
+        ]
+        matched_map = {}
+        if matched_ids:
+            placeholders = ",".join("?" * len(matched_ids))
+            m_cur = conn.execute(
+                f"SELECT invoice_id, vendor_name, amount, category, status, processed_at FROM invoices WHERE invoice_id IN ({placeholders})",
+                matched_ids,
+            )
+            for m_row in m_cur.fetchall():
+                matched_map[m_row["invoice_id"]] = dict(m_row)
+
+        results = []
+        for r in rows:
+            d = dict(r)
+            m_ref = d.get("matched_reference")
+            if m_ref and m_ref.strip() in matched_map:
+                d["matched_invoice"] = matched_map[m_ref.strip()]
+            else:
+                d["matched_invoice"] = None
+            results.append(d)
+
+        return results
     finally:
         conn.close()
 

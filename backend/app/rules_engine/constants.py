@@ -1,31 +1,42 @@
 """
 Configuration rules and constants for the AP Rules Engine.
+Delegates to config_loader for dynamic, non-hardcoded policy configuration.
 """
 
-# Categories and their policy limits & PO requirements
-CATEGORY_POLICY = {
-    "Office Supplies": {"limit": 25000.0, "po_required": False},
-    "IT Equipment": {"limit": 500000.0, "po_required": True},
-    "Travel": {"limit": 60000.0, "po_required": False},
-    "Catering": {"limit": 40000.0, "po_required": False},
-    "Logistics": {"limit": 150000.0, "po_required": True},
-    "Professional Services": {"limit": 1000000.0, "po_required": True},
-    "Facilities": {"limit": 300000.0, "po_required": True},
-    "Marketing": {"limit": 200000.0, "po_required": False},
-}
+from .config_loader import (
+    load_policy_config,
+    get_policy_config,
+    save_policy_config,
+    reload_policy_config,
+    get_category_policy,
+    get_approval_ladder,
+    get_po_tolerance_percent,
+    get_duplicate_date_window_days,
+    get_fuzzy_vendor_similarity_threshold,
+    get_fuzzy_amount_tolerance_percent,
+    get_confidence_threshold_auto_flag,
+)
 
-# Approval ladder thresholds (who is allowed to approve up to what amount)
-APPROVER_LADDER = {
-    "Team Manager": 10000.0,
-    "Department Head": 100000.0,
-    "Finance Controller": 1000000.0,
-    "CFO": float("inf"),
-}
+CATEGORY_POLICY = get_category_policy()
+APPROVER_LADDER = get_approval_ladder()
+PO_TOLERANCE_PERCENT = get_po_tolerance_percent()
+DUPLICATE_DATE_WINDOW_DAYS = get_duplicate_date_window_days()
+FUZZY_VENDOR_SIMILARITY_THRESHOLD = get_fuzzy_vendor_similarity_threshold()
+FUZZY_AMOUNT_TOLERANCE_PERCENT = get_fuzzy_amount_tolerance_percent()
+CONFIDENCE_THRESHOLD_AUTO_FLAG = get_confidence_threshold_auto_flag()
 
-# PO amount tolerance (5%)
-PO_TOLERANCE_PERCENT = 0.05
 
-# Duplicate matching thresholds (tightened for precision)
-DUPLICATE_DATE_WINDOW_DAYS = 7            # Within 7 days
-FUZZY_VENDOR_SIMILARITY_THRESHOLD = 90.0  # RapidFuzz ratio >= 90%
-FUZZY_AMOUNT_TOLERANCE_PERCENT = 0.01     # Amount within 1%
+def refresh_constants() -> None:
+    """Refreshes module variables after policy config reload."""
+    global CATEGORY_POLICY, APPROVER_LADDER, PO_TOLERANCE_PERCENT
+    global DUPLICATE_DATE_WINDOW_DAYS, FUZZY_VENDOR_SIMILARITY_THRESHOLD
+    global FUZZY_AMOUNT_TOLERANCE_PERCENT, CONFIDENCE_THRESHOLD_AUTO_FLAG
+
+    reload_policy_config()
+    CATEGORY_POLICY = get_category_policy()
+    APPROVER_LADDER = get_approval_ladder()
+    PO_TOLERANCE_PERCENT = get_po_tolerance_percent()
+    DUPLICATE_DATE_WINDOW_DAYS = get_duplicate_date_window_days()
+    FUZZY_VENDOR_SIMILARITY_THRESHOLD = get_fuzzy_vendor_similarity_threshold()
+    FUZZY_AMOUNT_TOLERANCE_PERCENT = get_fuzzy_amount_tolerance_percent()
+    CONFIDENCE_THRESHOLD_AUTO_FLAG = get_confidence_threshold_auto_flag()

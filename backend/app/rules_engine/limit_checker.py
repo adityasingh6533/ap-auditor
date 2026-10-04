@@ -6,10 +6,10 @@ Checks policy spend limits, approval authority ladder, PO amount tolerances, and
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
-from .constants import (
-    CATEGORY_POLICY,
-    APPROVER_LADDER,
-    PO_TOLERANCE_PERCENT,
+from .config_loader import (
+    get_category_policy,
+    get_approval_ladder,
+    get_po_tolerance_percent,
 )
 
 
@@ -46,7 +46,10 @@ def _parse_date(val: Any) -> Optional[date]:
         return None
 
 
-def check_policy_limit(row: Dict[str, Any] | pd.Series) -> Optional[Dict[str, Any]]:
+def check_policy_limit(
+    row: Dict[str, Any] | pd.Series,
+    category_policy: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
     """
     Flags if amount > policy_limit for its category (or row policy_limit).
     Confidence is scaled between 0.65 and 0.95 depending on how significantly the limit was exceeded.
@@ -59,7 +62,8 @@ def check_policy_limit(row: Dict[str, Any] | pd.Series) -> Optional[Dict[str, An
     policy_limit = _parse_float(row.get("policy_limit"))
 
     if policy_limit is None:
-        cat_info = CATEGORY_POLICY.get(category)
+        policies = category_policy if category_policy is not None else get_category_policy()
+        cat_info = policies.get(category)
         if cat_info:
             policy_limit = cat_info.get("limit")
 
@@ -92,15 +96,19 @@ def check_policy_limit(row: Dict[str, Any] | pd.Series) -> Optional[Dict[str, An
     return None
 
 
-def _get_required_approver_role(amount: float) -> Tuple[str, float]:
+def _get_required_approver_role(amount: float, ladder: Optional[Dict[str, float]] = None) -> Tuple[str, float]:
     """Determines minimum required approver role and authority limit for an amount."""
-    for role, limit in sorted(APPROVER_LADDER.items(), key=lambda x: x[1]):
+    active_ladder = ladder if ladder is not None else get_approval_ladder()
+    for role, limit in sorted(active_ladder.items(), key=lambda x: x[1]):
         if amount <= limit:
             return role, limit
     return "CFO", float("inf")
 
 
-def check_approval_authority(row: Dict[str, Any] | pd.Series) -> Optional[Dict[str, Any]]:
+def check_approval_authority(
+    row: Dict[str, Any] | pd.Series,
+    approval_ladder: Optional[Dict[str, float]] = None,
+) -> Optional[Dict[str, Any]]:
     """
     Flags if listed approver's authority (per ladder) is lower than what the amount requires:
     - Team Manager: up to 10,000
@@ -122,12 +130,14 @@ def check_approval_authority(row: Dict[str, Any] | pd.Series) -> Optional[Dict[s
             "reason": f"No designated approver found for invoice amount ₹{amount:,.2f}."
         }
 
+    ladder = approval_ladder if approval_ladder is not None else get_approval_ladder()
+
     # Match approver role from ladder
     approver_limit: Optional[float] = None
     approver_matched_role = approver
 
     # Look for matching role name in ladder
-    for role, limit in APPROVER_LADDER.items():
+    for role, limit in ladder.items():
         if role.lower() in approver.lower() or approver.lower() in role.lower():
             approver_limit = limit
             approver_matched_role = role
@@ -135,14 +145,14 @@ def check_approval_authority(row: Dict[str, Any] | pd.Series) -> Optional[Dict[s
 
     # If role not found directly, check if standard mapped names exist
     if approver_limit is None:
-        approver_limit = APPROVER_LADDER.get(approver)
+        approver_limit = ladder.get(approver)
 
     # If still not recognized, treat as Team Manager level (minimum) or flag
     if approver_limit is None:
-        approver_limit = 10000.0
+        approver_limit = ladder.get("Team Manager", 10000.0)
 
     if amount > approver_limit:
-        required_role, required_limit = _get_required_approver_role(amount)
+        required_role, required_limit = _get_required_approver_role(amount, ladder=ladder)
         gap_ratio = amount / approver_limit if approver_limit > 0 else 2.0
         confidence = min(0.92, 0.70 + 0.15 * min(1.0, (gap_ratio - 1.0) / 2.0))
 
@@ -166,9 +176,12 @@ def check_approval_authority(row: Dict[str, Any] | pd.Series) -> Optional[Dict[s
     return None
 
 
-def check_po_amount_mismatch(row: Dict[str, Any] | pd.Series) -> Optional[Dict[str, Any]]:
+def check_po_amount_mismatch(
+    row: Dict[str, Any] | pd.Series,
+    tolerance_fraction: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
     """
-    If po_amount exists, flags if amount exceeds po_amount by more than 5% tolerance.
+    If po_amount exists, flags if amount exceeds po_amount by more than tolerance.
     """
     amount = _parse_float(row.get("amount"))
     po_amount = _parse_float(row.get("po_amount"))
@@ -176,14 +189,15 @@ def check_po_amount_mismatch(row: Dict[str, Any] | pd.Series) -> Optional[Dict[s
     if amount is None or po_amount is None or po_amount <= 0:
         return None
 
-    allowed_threshold = po_amount * (1.0 + PO_TOLERANCE_PERCENT)
+    tol = tolerance_fraction if tolerance_fraction is not None else get_po_tolerance_percent()
+    allowed_threshold = po_amount * (1.0 + tol)
 
     if amount > allowed_threshold:
         overage = amount - po_amount
         pct_over = (overage / po_amount) * 100.0
         
         # Scale confidence based on excess percentage
-        confidence = min(0.92, 0.65 + 0.20 * min(1.0, (pct_over - 5.0) / 25.0))
+        confidence = min(0.92, 0.65 + 0.20 * min(1.0, (pct_over - (tol * 100.0)) / 25.0))
 
         return {
             "check_type": "PO_AMOUNT_MISMATCH",
@@ -195,11 +209,11 @@ def check_po_amount_mismatch(row: Dict[str, Any] | pd.Series) -> Optional[Dict[s
                 "allowed_threshold": allowed_threshold,
                 "overage": overage,
                 "overage_percent": round(pct_over, 2),
-                "tolerance_percent": PO_TOLERANCE_PERCENT * 100.0,
+                "tolerance_percent": tol * 100.0,
             },
             "reason": (
                 f"Invoice amount ₹{amount:,.2f} exceeds PO amount ₹{po_amount:,.2f} by "
-                f"{pct_over:.1f}% (exceeds allowable tolerance of 5.0%)."
+                f"{pct_over:.1f}% (exceeds allowable tolerance of {tol*100.0:.1f}%)."
             ),
         }
     return None

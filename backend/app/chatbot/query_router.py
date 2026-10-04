@@ -84,5 +84,11 @@ def handle_intent(intent: str, entities: Dict[str, Any]) -> Tuple[str, Optional[
         except Exception as e:
             return "ERROR", {"error": str(e)}
 
+    elif intent == "EXPORT_REPORT":
+        return "SUCCESS", {
+            "download_url": "/api/reports/export",
+            "message": "AP Audit Exception Report is available for download.",
+        }
+
     # For GENERAL or unhandled intents, return None so fallback can handle
     return "FALLBACK", None

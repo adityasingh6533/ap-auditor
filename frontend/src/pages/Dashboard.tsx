@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { RefreshCw, CheckCircle, AlertTriangle, Clock, ChevronRight } from 'lucide-react';
-import { fetchStats, fetchExceptions, submitDecision, StatsResponse, InvoiceException } from '../services/api';
+import { RefreshCw, CheckCircle, AlertTriangle, Clock, ChevronRight, Download } from 'lucide-react';
+import { fetchStats, fetchExceptions, submitDecision, downloadReport, StatsResponse, InvoiceException } from '../services/api';
+import { DuplicateComparisonCard } from '../components/DuplicateComparisonCard';
 
 // ── Stat Card ──────────────────────────────────────────────────────────────
 
@@ -52,6 +53,8 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -81,6 +84,17 @@ const Dashboard: React.FC = () => {
     }
   }, []);
 
+  const handleExport = async (format: 'pdf' | 'csv' = 'pdf') => {
+    setExporting(true);
+    try {
+      await downloadReport(format);
+    } catch (err) {
+      alert('Failed to download audit report. Please verify backend service.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 space-y-8">
       {/* Header */}
@@ -89,14 +103,25 @@ const Dashboard: React.FC = () => {
           <h1 className="text-2xl font-bold text-industrial-text tracking-tight">Audit Dashboard</h1>
           <p className="text-sm text-industrial-text-muted mt-1">Real-time compliance overview from the AP rules engine</p>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 border border-industrial-border text-sm text-industrial-text-muted hover:border-accent/50 hover:text-accent transition-colors"
-        >
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => handleExport('pdf')}
+            disabled={exporting}
+            className="flex items-center gap-2 px-4 py-2 border border-accent/40 bg-accent/10 text-sm font-medium text-accent hover:bg-accent/20 transition-colors disabled:opacity-50"
+            title="Download executive PDF exception summary"
+          >
+            <Download size={14} className={exporting ? 'animate-bounce' : ''} />
+            {exporting ? 'Exporting...' : 'Export Report (PDF)'}
+          </button>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 border border-industrial-border text-sm text-industrial-text-muted hover:border-accent/50 hover:text-accent transition-colors"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -182,42 +207,72 @@ const Dashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {exceptions.map((exc, i) => (
-                  <tr key={exc.invoice_id} className={`border-b border-industrial-border/50 hover:bg-industrial-graphite/50 transition-colors ${i % 2 === 1 ? 'bg-industrial-bg/50' : ''}`}>
-                    <td className="px-4 py-3 font-mono text-accent text-xs">{exc.invoice_id}</td>
-                    <td className="px-4 py-3 text-industrial-text text-xs max-w-[140px] truncate">{exc.vendor_name}</td>
-                    <td className="px-4 py-3 font-mono text-industrial-text text-xs">
-                      {exc.amount?.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-[10px] text-warning bg-warning/10 px-2 py-0.5 border border-warning/30 font-mono whitespace-nowrap">
-                        {exc.triggered_checks}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-industrial-text-muted text-xs max-w-[200px]">
-                      <span className="block truncate" title={exc.reason_text}>{exc.reason_text}</span>
-                    </td>
-                    <td className="px-4 py-3"><StatusTag status={exc.status} /></td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleDecision(exc.invoice_id, 'approve')}
-                          disabled={actionLoading === exc.invoice_id}
-                          className="px-3 py-1 text-[11px] bg-nominal/20 text-nominal-bright border border-nominal/40 hover:bg-nominal/30 disabled:opacity-40 transition-colors"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => handleDecision(exc.invoice_id, 'reject')}
-                          disabled={actionLoading === exc.invoice_id}
-                          className="px-3 py-1 text-[11px] bg-error/10 text-error border border-error/40 hover:bg-error/20 disabled:opacity-40 transition-colors"
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {exceptions.map((exc, i) => {
+                  const isDup = exc.triggered_checks.includes('DUPLICATE');
+                  const isExpanded = expandedId === exc.invoice_id;
+
+                  return (
+                    <React.Fragment key={exc.invoice_id}>
+                      <tr className={`border-b border-industrial-border/50 hover:bg-industrial-graphite/50 transition-colors ${i % 2 === 1 ? 'bg-industrial-bg/50' : ''}`}>
+                        <td className="px-4 py-3 font-mono text-accent text-xs">{exc.invoice_id}</td>
+                        <td className="px-4 py-3 text-industrial-text text-xs max-w-[140px] truncate">{exc.vendor_name}</td>
+                        <td className="px-4 py-3 font-mono text-industrial-text text-xs">
+                          {exc.amount?.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-[10px] px-2 py-0.5 border font-mono whitespace-nowrap ${
+                            isDup
+                              ? 'text-warning bg-warning/15 border-warning/40 font-bold'
+                              : 'text-warning bg-warning/10 border-warning/30'
+                          }`}>
+                            {exc.triggered_checks}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-industrial-text-muted text-xs max-w-[220px]">
+                          <div className="flex flex-col gap-1">
+                            <span className="block truncate" title={exc.reason_text}>{exc.reason_text}</span>
+                            {isDup && (
+                              <button
+                                onClick={() => setExpandedId(isExpanded ? null : exc.invoice_id)}
+                                className="text-[10px] text-accent hover:underline flex items-center gap-1 font-semibold text-left font-mono"
+                              >
+                                {isExpanded ? '▲ Hide Side-by-Side' : '⚡ View Side-by-Side'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3"><StatusTag status={exc.status} /></td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleDecision(exc.invoice_id, 'approve')}
+                              disabled={actionLoading === exc.invoice_id}
+                              className="px-3 py-1 text-[11px] bg-nominal/20 text-nominal-bright border border-nominal/40 hover:bg-nominal/30 disabled:opacity-40 transition-colors"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => handleDecision(exc.invoice_id, 'reject')}
+                              disabled={actionLoading === exc.invoice_id}
+                              className="px-3 py-1 text-[11px] bg-error/10 text-error border border-error/40 hover:bg-error/20 disabled:opacity-40 transition-colors"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+
+                      {/* Side-by-side Evidence Card Sub-row */}
+                      {isDup && isExpanded && (
+                        <tr className="border-b border-industrial-border bg-industrial-graphite/30">
+                          <td colSpan={7} className="px-6 py-3">
+                            <DuplicateComparisonCard flaggedInvoice={exc} />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

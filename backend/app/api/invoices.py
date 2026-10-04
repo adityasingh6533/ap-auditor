@@ -118,3 +118,21 @@ def get_invoices(
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+@router.get("/invoices/{invoice_id}")
+def get_invoice_by_id(invoice_id: str) -> Dict[str, Any]:
+    """
+    Returns full invoice details for a specific invoice ID.
+    """
+    init_db()
+    conn = get_connection()
+    try:
+        cur = conn.execute("SELECT * FROM invoices WHERE invoice_id = ?", (invoice_id.strip(),))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found.")
+        return dict(row)
+    finally:
+        conn.close()
+
