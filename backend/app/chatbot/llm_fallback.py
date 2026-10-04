@@ -1,16 +1,115 @@
 """
-OpenAI LLM Fallback & Response Generator for AP Auditor Chatbot.
+Google Gemini LLM Fallback & Response Generator for AP Auditor Chatbot.
 Provides conversational assistance for GENERAL intent queries and open-ended questions
-using the standard OpenAI Python SDK with model gpt-4o-mini.
+using the Google Generative AI SDK with model gemini-2.0-flash.
 Also dynamically generates natural conversational replies grounded in real AP data.
-Falls back gracefully if the API key is unconfigured, placeholder, or invalid.
+Falls back gracefully if the GEMINI_API_KEY is unconfigured, placeholder, or invalid.
 """
 
 import json
-from typing import Any, Dict, Optional
+import logging
+import os
+import re
+from typing import Any, Dict, Optional, Tuple
+
+import google.generativeai as genai
+
 from ..api.stats import get_stats
-from .openai_client import get_openai_client
+from .gemini_client import clean_json_markdown, get_gemini_api_key, get_gemini_model
 from .response_formatter import format_response
+
+logger = logging.getLogger(__name__)
+
+VALID_INTENTS = {
+    "CHECK_STATUS",
+    "SHOW_FLAGGED",
+    "EXPLAIN_INVOICE",
+    "APPROVE_INVOICE",
+    "REJECT_INVOICE",
+    "SHOW_STATS",
+    "EXPORT_REPORT",
+    "GENERAL",
+}
+
+INVOICE_REGEX = re.compile(r"\b(INV-\d+)\b", re.IGNORECASE)
+
+
+def classify_with_gemini(user_message: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Tier 2 LLM classifier using Google Gemini (gemini-2.0-flash).
+    Extracts structured intent and invoice_id in strict JSON.
+    Gracefully handles missing keys, network timeouts, and markdown fences.
+    """
+    api_key = get_gemini_api_key() or os.environ.get("GEMINI_API_KEY")
+    dummy_keys = {"my-actual-key-goes-here", "your_gemini_api_key_here", "your-api-key-here", ""}
+    
+    if not api_key or api_key.strip() in dummy_keys:
+        inv_match = INVOICE_REGEX.search(user_message)
+        entities: Dict[str, Any] = {
+            "tier": 2,
+            "llm_handled": False,
+            "fallback_reason": "No valid Gemini API key configured.",
+        }
+        if inv_match:
+            entities["invoice_id"] = inv_match.group(1).upper()
+        return "GENERAL", entities
+
+    system_prompt = (
+        "You are an intent classifier for AP Auditor, an enterprise Accounts Payable audit copilot. "
+        "Classify the user message into exactly one of these intents: "
+        "CHECK_STATUS, SHOW_FLAGGED, EXPLAIN_INVOICE, APPROVE_INVOICE, "
+        "REJECT_INVOICE, SHOW_STATS, EXPORT_REPORT, GENERAL. "
+        "Also extract any invoice ID mentioned (e.g. INV-1002). "
+        "Respond in strict JSON only: {\"intent\": string, \"invoice_id\": string or null}"
+    )
+
+    try:
+        model = get_gemini_model("gemini-2.5-flash")
+        if model is None:
+            inv_match = INVOICE_REGEX.search(user_message)
+            entities = {"tier": 2, "llm_handled": False, "fallback_reason": "Could not initialize Gemini model."}
+            if inv_match:
+                entities["invoice_id"] = inv_match.group(1).upper()
+            return "GENERAL", entities
+
+        response = model.generate_content(
+            f"{system_prompt}\n\nUser message: {user_message}\n\nRespond in strict JSON only: {{\"intent\": string, \"invoice_id\": string or null}}"
+        )
+
+        raw_text = getattr(response, "text", "") or ""
+        # Strip any markdown code fences first (Gemini sometimes wraps JSON in ```json blocks)
+        cleaned_text = clean_json_markdown(raw_text)
+
+        try:
+            parsed = json.loads(cleaned_text)
+        except Exception as json_err:
+            logger.warning(f"Failed to parse Gemini JSON output '{cleaned_text}': {json_err}")
+            parsed = {}
+
+        intent = parsed.get("intent", "GENERAL")
+        if not isinstance(intent, str) or intent.strip().upper() not in VALID_INTENTS:
+            intent = "GENERAL"
+        else:
+            intent = intent.strip().upper()
+
+        invoice_id = parsed.get("invoice_id")
+        entities = {"tier": 2, "llm_handled": True}
+        if invoice_id and isinstance(invoice_id, str) and invoice_id.strip():
+            entities["invoice_id"] = invoice_id.strip().upper()
+        else:
+            inv_match = INVOICE_REGEX.search(user_message)
+            if inv_match:
+                entities["invoice_id"] = inv_match.group(1).upper()
+
+        return intent, entities
+
+    except Exception as e:
+        logger.warning(f"Gemini intent classification call failed: {e}")
+        inv_match = INVOICE_REGEX.search(user_message)
+        entities = {"tier": 2, "llm_handled": False, "error": str(e)}
+        if inv_match:
+            entities["invoice_id"] = inv_match.group(1).upper()
+        return "GENERAL", entities
 
 
 DEFAULT_GUIDE = (
@@ -28,12 +127,26 @@ DEFAULT_GUIDE = (
 
 def handle_llm_fallback(user_message: str, stats_context: Optional[Dict[str, Any]] = None) -> str:
     """
-    Calls OpenAI gpt-4o-mini for open-ended queries using system AP context.
-    If OPENAI_API_KEY is missing, placeholder, or call fails, returns a graceful fallback guide.
+    Calls Google Gemini gemini-2.5-flash for open-ended queries using system AP context.
+    If GEMINI_API_KEY is missing, placeholder, or call fails, returns a graceful fallback guide.
     """
-    client = get_openai_client()
-    if client is None:
-        return DEFAULT_GUIDE
+    model = get_gemini_model("gemini-2.5-flash")
+    if model is None:
+        return (
+            "🤖 **AP Auditor AI Copilot**\n\n"
+            "I'm currently running in **Tier 1 (Rules Engine Mode)** because a Google Gemini API key has not been configured yet.\n\n"
+            "🔑 **To activate Gemini (Tier 2 Conversational AI):**\n"
+            "1. Open `backend/.env`\n"
+            "2. Replace `GEMINI_API_KEY=my-actual-key-goes-here` with your real key from [Google AI Studio](https://aistudio.google.com/app/apikey)\n"
+            "3. Save the file (it connects immediately, no server restart needed!)\n\n"
+            "⚡ **Instant commands ready right now:**\n"
+            "• **'show stats'** — view compliance metrics and totals\n"
+            "• **'show flagged invoices'** — view review queue exceptions\n"
+            "• **'why was INV-3918 flagged'** — inspect rule violations for an invoice\n"
+            "• **'approve INV-1002'** or **'reject INV-1002'** — record audit decisions\n"
+            "• **'export report'** — generate audit report"
+        )
+
 
     if not stats_context:
         try:
@@ -49,16 +162,10 @@ def handle_llm_fallback(user_message: str, stats_context: Optional[Dict[str, Any
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=350,
-            temperature=0.3,
+        response = model.generate_content(
+            f"{system_prompt}\n\nUser question: {user_message}\n\nRespond helpfully and concisely."
         )
-        content = response.choices[0].message.content
+        content = getattr(response, "text", "")
         return content.strip() if content else DEFAULT_GUIDE
 
     except Exception as e:
@@ -77,17 +184,16 @@ def generate_conversational_reply(
 ) -> str:
     """
     Generates a natural, intelligent conversational reply.
-    If OpenAI is available, prompts gpt-4o-mini to formulate a rich, business-grade
+    If Gemini is available, prompts gemini-2.5-flash to formulate a rich, business-grade
     explanation grounded directly in the retrieved AP data.
-    If OpenAI is not available, uses deterministic template formatting.
+    If Gemini is not available, uses deterministic template formatting.
     """
     base_reply = format_response(intent, status, raw_data)
 
-    client = get_openai_client()
-    if client is None or not raw_data or status != "SUCCESS":
+    model = get_gemini_model("gemini-2.5-flash")
+    if model is None or not raw_data or status != "SUCCESS":
         return base_reply
 
-    # Let OpenAI generate a natural conversational answer grounded in raw_data
     system_prompt = (
         "You are AP Auditor AI Copilot, an enterprise Accounts Payable auditing assistant. "
         "Formulate a direct, natural, professional response to the user's question, grounded "
@@ -97,30 +203,22 @@ def generate_conversational_reply(
     )
 
     prompt = (
+        f"{system_prompt}\n\n"
         f"User question: {user_message}\n"
         f"Classified Intent: {intent}\n"
-        f"System AP Data: {json.dumps(raw_data, default=str)}\n"
-        f"Standard summary reference:\n{base_reply}"
+        f"Execution Status: {status}\n"
+        f"Verified AP Data Payload:\n{raw_data}\n\n"
+        "Draft the final response to the user:"
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=250,
-            temperature=0.3,
-        )
-        content = response.choices[0].message.content
-        if content and content.strip():
-            return content.strip()
+        response = model.generate_content(prompt)
+        content = getattr(response, "text", "")
+        return content.strip() if content else base_reply
     except Exception:
-        pass
-
-    return base_reply
+        return base_reply
 
 
-# Backward-compatibility alias
-handle_azure_fallback = handle_llm_fallback
+def handle_azure_fallback(user_message: str, stats_context: Optional[Dict[str, Any]] = None) -> str:
+    """Backward compatibility alias."""
+    return handle_llm_fallback(user_message, stats_context)

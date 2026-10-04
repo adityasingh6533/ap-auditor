@@ -1,9 +1,10 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
-import { ShieldCheck, LayoutDashboard, ScrollText, MessageSquare } from 'lucide-react';
+import { ShieldCheck, LayoutDashboard, ScrollText, MessageSquare, Sliders } from 'lucide-react';
 import Home from './pages/Home';
 import Dashboard from './pages/Dashboard';
 import AuditLog from './pages/AuditLog';
+import PolicyEditor from './pages/PolicyEditor';
 
 // ── Navbar ─────────────────────────────────────────────────────────────────
 
@@ -11,6 +12,7 @@ const NAV_LINKS = [
   { to: '/', label: 'Chat', icon: MessageSquare, exact: true },
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, exact: false },
   { to: '/audit', label: 'Audit Log', icon: ScrollText, exact: false },
+  { to: '/policies', label: 'Policy Rules', icon: Sliders, exact: false },
 ];
 
 const Navbar: React.FC = () => {
@@ -68,6 +70,7 @@ const Layout: React.FC = () => {
           <Route path="/" element={<Home />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/audit" element={<AuditLog />} />
+          <Route path="/policies" element={<PolicyEditor />} />
         </Routes>
       </main>
     </div>

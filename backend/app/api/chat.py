@@ -57,3 +57,13 @@ def chat_endpoint(payload: ChatMessageRequest) -> ChatMessageResponse:
         data=raw_data,
         tier=tier,
     )
+
+
+@router.get("/chat/status")
+def chat_status_endpoint() -> Dict[str, Any]:
+    """
+    Returns live diagnostics for Gemini LLM configuration and tier availability.
+    """
+    from ..chatbot.gemini_client import check_gemini_status
+    return check_gemini_status()
+

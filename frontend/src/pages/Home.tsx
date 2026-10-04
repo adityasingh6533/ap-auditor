@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Paperclip, Bot, User, AlertTriangle, CheckCircle, Clock, BarChart2 } from 'lucide-react';
-import { sendChatMessage, uploadInvoiceCSV, ChatResponse, InvoiceException } from '../services/api';
+import { Send, Paperclip, Bot, User, AlertTriangle, CheckCircle, Clock, BarChart2, Cpu, Sparkles } from 'lucide-react';
+import { sendChatMessage, uploadInvoiceCSV, ChatResponse, InvoiceException, fetchChatStatus, ChatStatusResponse } from '../services/api';
+
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -205,8 +206,22 @@ const Home: React.FC = () => {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [chatStatus, setChatStatus] = useState<ChatStatusResponse | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const s = await fetchChatStatus();
+      setChatStatus(s);
+    } catch {
+      // Backend may be starting
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshStatus();
+  }, [refreshStatus]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -232,12 +247,13 @@ const Home: React.FC = () => {
     try {
       const res: ChatResponse = await sendChatMessage(msg);
       addMessage('assistant', res.reply, { intent: res.intent, data: res.data });
+      refreshStatus();
     } catch {
       addMessage('assistant', 'Sorry, I couldn\'t reach the AP Auditor backend. Please make sure the server is running on http://localhost:8000.');
     } finally {
       setLoading(false);
     }
-  }, [input, loading, addMessage]);
+  }, [input, loading, addMessage, refreshStatus]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -273,6 +289,36 @@ const Home: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {/* Engine Status Top Bar */}
+      <div className="px-4 py-2 border-b border-industrial-border bg-industrial-surface/80 flex items-center justify-between text-xs">
+        <div className="flex items-center gap-2">
+          <Bot size={14} className="text-accent" />
+          <span className="font-semibold text-industrial-text">AP Auditor Copilot</span>
+        </div>
+        <div className="flex items-center gap-3">
+          {chatStatus ? (
+            chatStatus.api_key_configured && chatStatus.gemini_ready ? (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 border border-nominal-bright/40 bg-nominal/10 text-nominal-bright rounded-none text-[11px] font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-nominal-bright animate-pulse" />
+                <Sparkles size={11} />
+                Gemini 2.0 Flash (Tier 2 Active)
+              </span>
+            ) : (
+              <span
+                title="Paste your Gemini key into backend/.env to enable conversational AI"
+                className="flex items-center gap-1.5 px-2 py-0.5 border border-warning/40 bg-warning/10 text-warning rounded-none text-[11px] font-mono cursor-help"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-warning" />
+                <Cpu size={11} />
+                Tier 1 Rules Engine Active • Gemini Key Pending in backend/.env
+              </span>
+            )
+          ) : (
+            <span className="text-[11px] font-mono text-industrial-text-muted">Connecting...</span>
+          )}
+        </div>
+      </div>
+
       {/* Message list */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-5 min-h-0">
         {messages.map((msg) => {

@@ -160,3 +160,59 @@ export const downloadReport = async (format: 'pdf' | 'csv' = 'pdf'): Promise<voi
   window.URL.revokeObjectURL(url);
 };
 
+export interface ChatStatusResponse {
+  provider: string;
+  model: string;
+  api_key_configured: boolean;
+  is_placeholder: boolean;
+  key_source: string;
+  key_preview: string;
+  tier1_rules_engine: string;
+  tier2_llm_engine: string;
+  connection_test?: string;
+  gemini_ready: boolean;
+  instruction?: string;
+}
+
+export const fetchChatStatus = async (): Promise<ChatStatusResponse> => {
+  const { data } = await api.get<ChatStatusResponse>('/api/chat/status');
+  return data;
+};
+
+export interface PolicyCategoryRule {
+
+  limit: number;
+  po_required: boolean;
+}
+
+export interface ApprovalLadderRole {
+  role: string;
+  max_amount: number | null;
+}
+
+export interface DuplicateMatchingConfig {
+  fuzzy_similarity_threshold: number;
+  amount_tolerance_percent: number;
+  date_window_days: number;
+}
+
+export interface PolicyConfig {
+  categories: Record<string, PolicyCategoryRule>;
+  approval_ladder: ApprovalLadderRole[];
+  duplicate_matching: DuplicateMatchingConfig;
+  po_tolerance_percent: number;
+  confidence_threshold_auto_flag: number;
+}
+
+export const fetchPolicyConfig = async (): Promise<PolicyConfig> => {
+  const { data } = await api.get<PolicyConfig>('/api/config');
+  return data;
+};
+
+export const updatePolicyConfig = async (config: PolicyConfig): Promise<{ message: string; config: PolicyConfig }> => {
+  const { data } = await api.put<{ message: string; config: PolicyConfig }>('/api/config', config);
+  return data;
+};
+
+
+

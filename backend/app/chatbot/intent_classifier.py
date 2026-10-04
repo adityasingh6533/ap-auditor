@@ -29,23 +29,22 @@ VALID_INTENTS = {
     "GENERAL",
 }
 
-# --- TIER 1: Exact / Canonical Command Matchers ---
-# Matches standard, direct operational commands.
+# --- TIER 1: Exact / Canonical & Common Operational Patterns ---
 TIER1_PATTERNS = [
-    # Direct approve command: e.g. "approve INV-1002"
-    (re.compile(r"^\s*(?:approve|pass|accept)\s+(inv-\d+)\s*$", re.IGNORECASE), "APPROVE_INVOICE"),
-    # Direct reject command: e.g. "reject INV-1002"
-    (re.compile(r"^\s*(?:reject|deny|block)\s+(inv-\d+)\s*$", re.IGNORECASE), "REJECT_INVOICE"),
-    # Direct explain command: e.g. "why was INV-1002 flagged", "explain INV-1002"
-    (re.compile(r"^\s*(?:why\s+(?:was\s+)?|explain\s+|details\s+(?:for\s+)?|inspect\s+)(inv-\d+)(?:\s+flagged)?\s*$", re.IGNORECASE), "EXPLAIN_INVOICE"),
-    # Direct flagged queue command: e.g. "show flagged", "flagged invoices", "review queue"
-    (re.compile(r"^\s*(?:show\s+)?(?:flagged(?:\s+invoices?)?|exceptions?|review\s+queue|unresolved)\s*$", re.IGNORECASE), "SHOW_FLAGGED"),
-    # Direct stats command: e.g. "show stats", "summary", "kpis", "metrics"
-    (re.compile(r"^\s*(?:show\s+)?(?:stats?|statistics|summary|metrics?|kpis?|overview)\s*$", re.IGNORECASE), "SHOW_STATS"),
-    # Direct system status command: e.g. "check status", "system status", "health"
-    (re.compile(r"^\s*(?:check\s+status|system\s+status|audit\s+status|health)\s*$", re.IGNORECASE), "CHECK_STATUS"),
-    # Direct export report command: e.g. "export report", "download report", "give me a report"
-    (re.compile(r"^\s*(?:(?:export|download|generate|give\s+me\s+(?:a\s+)?|get)\s+)?report\s*$", re.IGNORECASE), "EXPORT_REPORT"),
+    # Approve variants: "approve INV-1002", "I want to sign off on INV-1002", "sign off on INV-1002"
+    (re.compile(r".*?\b(?:sign\s*off(?:\s+on)?|approve|pass|accept|clear)\s+(inv-\d+)\b.*?", re.IGNORECASE), "APPROVE_INVOICE"),
+    # Reject variants: "reject INV-1002", "deny INV-1002", "block INV-1002"
+    (re.compile(r".*?\b(?:reject|deny|block|disallow)\s+(inv-\d+)\b.*?", re.IGNORECASE), "REJECT_INVOICE"),
+    # Explain variants: "why was INV-1002 flagged", "explain INV-1002", "details for INV-1002"
+    (re.compile(r".*?\b(?:why\s+(?:was\s+)?|explain\s+|details\s+(?:for\s+)?|inspect\s+|what\s+happened\s+(?:to|with)\s+)(inv-\d+)\b.*?", re.IGNORECASE), "EXPLAIN_INVOICE"),
+    # Flagged / stuck queue variants: "which invoices got stuck", "show flagged", "stuck invoices"
+    (re.compile(r".*?\b(?:(?:which\s+invoices\s+(?:got\s+|are\s+)?stuck)|stuck\s+invoices?|flagged(?:\s+invoices?)?|review\s+queue|exceptions?|unresolved)\b.*?", re.IGNORECASE), "SHOW_FLAGGED"),
+    # Stats / summary variants: "what's going on with the invoices today", "show stats", "summary"
+    (re.compile(r".*?\b(?:what'?s\s+going\s+on\s+with\s+(?:the\s+)?invoices|stats?|statistics|summary|metrics?|kpis?|overview)\b.*?", re.IGNORECASE), "SHOW_STATS"),
+    # System status / health
+    (re.compile(r".*?\b(?:check\s+status|system\s+status|audit\s+status|health)\b.*?", re.IGNORECASE), "CHECK_STATUS"),
+    # Export report
+    (re.compile(r".*?\b(?:export|download|generate|get)\s+report\b.*?", re.IGNORECASE), "EXPORT_REPORT"),
 ]
 
 
@@ -88,8 +87,8 @@ def set_tier2_test_provider(provider: Optional[Callable[[str], Optional[str]]]) 
 
 def classify_tier2(user_message: str) -> Tuple[str, Dict[str, Any]]:
     """
-    Tier 2 LLM classifier for natural conversational language.
-    Calls Azure OpenAI (or OpenAI) using a strict JSON system prompt.
+    Tier 2 LLM classifier for natural conversational language using Google Gemini.
+    Extracts structured intent and invoice_id in strict JSON.
     If no key is configured or call fails, gracefully returns GENERAL.
     """
     # 1. Check if mock test provider is set
@@ -98,7 +97,9 @@ def classify_tier2(user_message: str) -> Tuple[str, Dict[str, Any]]:
         mock_output = _tier2_test_provider(user_message)
         if mock_output is not None:
             try:
-                parsed = json.loads(mock_output)
+                from .gemini_client import clean_json_markdown
+                cleaned = clean_json_markdown(mock_output)
+                parsed = json.loads(cleaned)
                 intent = parsed.get("intent", "GENERAL").strip().upper()
                 if intent not in VALID_INTENTS:
                     intent = "GENERAL"
@@ -110,68 +111,9 @@ def classify_tier2(user_message: str) -> Tuple[str, Dict[str, Any]]:
             except Exception as e:
                 logger.warning(f"Failed to parse mock Tier 2 JSON: {e}")
 
-    # 2. Check OpenAI API configuration
-    from .openai_client import get_openai_client, get_llm_model_name
-
-    client = get_openai_client()
-    model_name = get_llm_model_name()
-
-    # If no LLM credentials are configured or placeholder, return graceful GENERAL
-    if client is None:
-        inv_match = INVOICE_REGEX.search(user_message)
-        entities: Dict[str, Any] = {
-            "tier": 2,
-            "llm_handled": False,
-            "fallback_reason": "No valid OpenAI API key configured.",
-        }
-        if inv_match:
-            entities["invoice_id"] = inv_match.group(1).upper()
-        return "GENERAL", entities
-
-    system_prompt = (
-        "Classify this user message into exactly one of: "
-        "CHECK_STATUS, SHOW_FLAGGED, EXPLAIN_INVOICE, APPROVE_INVOICE, "
-        "REJECT_INVOICE, SHOW_STATS, EXPORT_REPORT, GENERAL. "
-        "Also extract any invoice_id mentioned (format INV-####). "
-        "Respond in strict JSON: {\"intent\": string, \"invoice_id\": string|null}"
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.0,
-            max_tokens=80,
-            response_format={"type": "json_object"},
-        )
-        raw_content = response.choices[0].message.content or "{}"
-
-        parsed = json.loads(raw_content)
-        intent = parsed.get("intent", "GENERAL").strip().upper()
-        if intent not in VALID_INTENTS:
-            intent = "GENERAL"
-
-        invoice_id = parsed.get("invoice_id")
-        entities = {"tier": 2, "llm_handled": True}
-        if invoice_id and isinstance(invoice_id, str) and invoice_id.strip():
-            entities["invoice_id"] = invoice_id.strip().upper()
-        else:
-            inv_match = INVOICE_REGEX.search(user_message)
-            if inv_match:
-                entities["invoice_id"] = inv_match.group(1).upper()
-
-        return intent, entities
-
-    except Exception as e:
-        logger.warning(f"Tier 2 OpenAI classification failed: {e}")
-        inv_match = INVOICE_REGEX.search(user_message)
-        entities = {"tier": 2, "llm_handled": False, "error": str(e)}
-        if inv_match:
-            entities["invoice_id"] = inv_match.group(1).upper()
-        return "GENERAL", entities
+    # 2. Call Google Gemini (gemini-2.0-flash)
+    from .llm_fallback import classify_with_gemini
+    return classify_with_gemini(user_message)
 
 
 def classify_intent(user_message: str) -> Tuple[str, Dict[str, Any]]:
