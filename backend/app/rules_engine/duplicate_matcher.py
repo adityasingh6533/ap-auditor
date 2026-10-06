@@ -66,29 +66,45 @@ class DuplicateMatcher:
         self._prepare_records(df)
 
     def _prepare_records(self, df: pd.DataFrame) -> None:
-        """Parses and normalizes dataset rows into internal record structures."""
-        for idx, row in df.iterrows():
+        """Parses and normalizes dataset rows into internal record structures and indexes."""
+        self.exact_index: Dict[Tuple[str, str, float], List[Dict[str, Any]]] = {}
+        self.category_index: Dict[str, List[Dict[str, Any]]] = {}
+
+        # If DataFrame, convert to dict records for 10x faster iteration
+        rows = df.to_dict("records") if isinstance(df, pd.DataFrame) else df
+
+        for idx, row in enumerate(rows):
             inv_id = str(row.get("invoice_id", f"ROW-{idx}")).strip()
             vendor = str(row.get("vendor_name", "")).strip()
             cat = str(row.get("category", "")).strip()
             amt = _parse_float(row.get("amount"))
             dt = _parse_date(row.get("invoice_date"))
 
-            self.records.append({
+            v_norm = vendor.lower().strip()
+            c_norm = cat.lower().strip()
+
+            rec = {
                 "index": idx,
                 "invoice_id": inv_id,
                 "vendor_name": vendor,
-                "vendor_normalized": vendor.lower().strip(),
+                "vendor_normalized": v_norm,
                 "category": cat,
-                "category_normalized": cat.lower().strip(),
+                "category_normalized": c_norm,
                 "amount": amt,
                 "invoice_date": dt,
-            })
+            }
+            self.records.append(rec)
+
+            if amt is not None and dt is not None and v_norm:
+                exact_key = (v_norm, c_norm, round(amt, 2))
+                self.exact_index.setdefault(exact_key, []).append(rec)
+                self.category_index.setdefault(c_norm, []).append(rec)
 
     def find_duplicates_for_invoice(self, current_record: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Finds exact or fuzzy duplicate matches for a given invoice record across the dataset.
         Flags invoices that duplicate an earlier preceding invoice in the dataset.
+        Uses indexed lookups for high-throughput processing (supporting 25,000+ invoices).
         """
         flags: List[Dict[str, Any]] = []
         curr_id = current_record["invoice_id"]
@@ -121,68 +137,80 @@ class DuplicateMatcher:
         exact_matches: List[Dict[str, Any]] = []
         fuzzy_matches: List[Dict[str, Any]] = []
 
-        for candidate in self.records:
+        # 1. Exact Duplicate Check via O(1) hash map:
+        # Same vendor (case-insensitive), same category, same amount within 0.01, within window
+        exact_key = (curr_vendor, curr_cat, round(curr_amt, 2))
+        exact_candidates = self.exact_index.get(exact_key, [])
+        for candidate in exact_candidates:
             cand_id = candidate["invoice_id"]
             if cand_id == curr_id:
                 continue
 
-            cand_amt = candidate["amount"]
             cand_dt = candidate["invoice_date"]
-            cand_vendor = candidate["vendor_normalized"]
-            cand_vendor_raw = candidate["vendor_name"]
-            cand_cat = candidate["category_normalized"]
-
-            if cand_amt is None or cand_dt is None or not cand_vendor:
-                continue
-
             # Candidate must be chronologically earlier or preceding invoice
             if not (cand_dt < curr_dt or (cand_dt == curr_dt and cand_id < curr_id)):
                 continue
 
-            # Check date window
             days_diff = (curr_dt - cand_dt).days
-            if days_diff > window_days or days_diff < 0:
-                continue
-
-            # 1. Exact Duplicate Check:
-            # Same vendor (case-insensitive), same category, same amount within 0.01, within window
-            if (
-                curr_vendor == cand_vendor
-                and curr_cat == cand_cat
-                and abs(curr_amt - cand_amt) < 0.01
-            ):
+            if 0 <= days_diff <= window_days:
                 exact_matches.append({
                     "matched_invoice_id": cand_id,
-                    "matched_vendor": cand_vendor_raw,
-                    "matched_amount": cand_amt,
+                    "matched_vendor": candidate["vendor_name"],
+                    "matched_amount": candidate["amount"],
                     "matched_date": cand_dt.isoformat(),
                     "days_apart": days_diff,
                     "category": candidate["category"],
                 })
                 break
 
-            # 2. Fuzzy Duplicate Check:
-            # Same category, vendor similarity >= threshold, amount within tolerance, within window
-            if curr_cat == cand_cat:
+        # 2. Fuzzy Duplicate Check (only needed if no exact match found):
+        # Scans only candidates in the same category within window
+        if not exact_matches:
+            category_candidates = self.category_index.get(curr_cat, [])
+            curr_v_len = len(curr_vendor)
+            len_tolerance = 1.0 - (sim_threshold / 100.0)
+
+            for candidate in category_candidates:
+                cand_id = candidate["invoice_id"]
+                if cand_id == curr_id:
+                    continue
+
+                cand_dt = candidate["invoice_date"]
+                if not (cand_dt < curr_dt or (cand_dt == curr_dt and cand_id < curr_id)):
+                    continue
+
+                days_diff = (curr_dt - cand_dt).days
+                if days_diff > window_days or days_diff < 0:
+                    continue
+
+                cand_amt = candidate["amount"]
                 max_amt = max(curr_amt, cand_amt)
                 if max_amt <= 0:
                     continue
-                amt_diff_pct = abs(curr_amt - cand_amt) / max_amt
 
-                if amt_diff_pct <= amt_tolerance_pct:
-                    similarity = fuzz.ratio(curr_vendor, cand_vendor)
-                    if similarity >= sim_threshold:
-                        fuzzy_matches.append({
-                            "matched_invoice_id": cand_id,
-                            "matched_vendor": cand_vendor_raw,
-                            "matched_amount": cand_amt,
-                            "matched_date": cand_dt.isoformat(),
-                            "days_apart": days_diff,
-                            "category": candidate["category"],
-                            "similarity_score": round(similarity, 1),
-                            "amount_diff_percent": round(amt_diff_pct * 100, 2),
-                        })
-                        break
+                amt_diff_pct = abs(curr_amt - cand_amt) / max_amt
+                if amt_diff_pct > amt_tolerance_pct:
+                    continue
+
+                cand_vendor = candidate["vendor_normalized"]
+                cand_v_len = len(cand_vendor)
+                max_len = max(curr_v_len, cand_v_len)
+                if max_len > 0 and (abs(curr_v_len - cand_v_len) / max_len) > len_tolerance:
+                    continue
+
+                similarity = fuzz.ratio(curr_vendor, cand_vendor)
+                if similarity >= sim_threshold:
+                    fuzzy_matches.append({
+                        "matched_invoice_id": cand_id,
+                        "matched_vendor": candidate["vendor_name"],
+                        "matched_amount": cand_amt,
+                        "matched_date": cand_dt.isoformat(),
+                        "days_apart": days_diff,
+                        "category": candidate["category"],
+                        "similarity_score": round(similarity, 1),
+                        "amount_diff_percent": round(amt_diff_pct * 100, 2),
+                    })
+                    break
 
         # Construct Flags (Exact duplicates take priority)
         for match in exact_matches:

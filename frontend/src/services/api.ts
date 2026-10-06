@@ -90,12 +90,28 @@ export const sendChatMessage = async (message: string): Promise<ChatResponse> =>
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
-export const uploadInvoiceCSV = async (file: File): Promise<UploadSummary> => {
+export const uploadInvoiceCSV = async (file: File, replace: boolean = true): Promise<UploadSummary> => {
   const formData = new FormData();
   formData.append('file', file);
-  const { data } = await api.post<UploadSummary>('/api/upload', formData, {
+  const { data } = await api.post<UploadSummary>(`/api/upload?replace=${replace}`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 600000, // 10 minutes timeout for enterprise datasets (25,000+ invoices)
   });
+  return data;
+};
+
+export const resetDataset = async (): Promise<UploadSummary> => {
+  const { data } = await api.post<UploadSummary>('/api/dataset/reset');
+  return data;
+};
+
+export const clearDataset = async (): Promise<{ message: string; total: number }> => {
+  const { data } = await api.post<{ message: string; total: number }>('/api/dataset/clear');
+  return data;
+};
+
+export const loadDemoDataset = async (): Promise<UploadSummary> => {
+  const { data } = await api.post<UploadSummary>('/api/dataset/load-demo');
   return data;
 };
 

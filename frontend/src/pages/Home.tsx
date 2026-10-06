@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Paperclip, Bot, User, AlertTriangle, CheckCircle, Clock, BarChart2, Cpu, Sparkles } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Send, Paperclip, Bot, User, AlertTriangle, CheckCircle, Clock, BarChart2, Cpu, Sparkles, Trash2, ChevronRight } from 'lucide-react';
 import { sendChatMessage, uploadInvoiceCSV, ChatResponse, InvoiceException, fetchChatStatus, ChatStatusResponse } from '../services/api';
 
 
@@ -107,19 +108,35 @@ const DataRenderer: React.FC<{ intent: string; data: Record<string, unknown> }> 
 // ── Upload summary card ────────────────────────────────────────────────────
 
 const UploadSummaryCard: React.FC<{ summary: { total: number; auto_pass_count: number; flagged_count: number; needs_review_count: number } }> = ({ summary }) => (
-  <div className="mt-3 border border-accent/30 bg-industrial-surface p-3 text-sm">
-    <div className="text-xs text-industrial-text-muted mb-2 tracking-wider uppercase">Upload Complete — {summary.total} invoices processed</div>
+  <div className="mt-3 border border-accent/40 bg-industrial-surface p-4 text-sm space-y-3">
+    <div className="flex items-center justify-between">
+      <div className="text-xs text-industrial-text font-semibold tracking-wider uppercase flex items-center gap-1.5">
+        <CheckCircle size={14} className="text-nominal-bright" />
+        Dataset Active — {summary.total.toLocaleString()} Invoices
+      </div>
+      <Link
+        to="/dashboard"
+        className="flex items-center gap-1 px-2.5 py-1 text-xs bg-accent text-white font-medium hover:bg-accent/90 transition-colors shadow-sm"
+      >
+        <span>View in Dashboard</span>
+        <ChevronRight size={12} />
+      </Link>
+    </div>
     <div className="grid grid-cols-3 gap-2">
       {[
-        { label: 'Passed', value: summary.auto_pass_count, color: 'text-nominal-bright' },
+        { label: 'Auto-Passed', value: summary.auto_pass_count, color: 'text-nominal-bright' },
         { label: 'Flagged', value: summary.flagged_count, color: 'text-warning' },
-        { label: 'Review', value: summary.needs_review_count, color: 'text-error' },
+        { label: 'Needs Review', value: summary.needs_review_count, color: 'text-error' },
       ].map((s) => (
-        <div key={s.label} className="text-center bg-industrial-graphite p-2">
-          <div className={`text-xl font-mono font-bold ${s.color}`}>{s.value}</div>
-          <div className="text-[10px] text-industrial-text-muted uppercase tracking-wider">{s.label}</div>
+        <div key={s.label} className="text-center bg-industrial-graphite p-2.5 border border-industrial-border/60">
+          <div className={`text-xl font-mono font-bold ${s.color}`}>{s.value.toLocaleString()}</div>
+          <div className="text-[10px] text-industrial-text-muted uppercase tracking-wider mt-0.5">{s.label}</div>
         </div>
       ))}
+    </div>
+    <div className="text-[11px] text-industrial-text-muted flex items-center gap-1.5 pt-1 border-t border-industrial-border/60">
+      <Sparkles size={11} className="text-accent" />
+      <span>Dashboard, Exceptions Queue, and Audit Log are now live with this dataset.</span>
     </div>
   </div>
 );
@@ -193,22 +210,67 @@ const SUGGESTIONS = [
   { icon: Clock, label: 'Audit logs', prompt: 'how many duplicates were found' },
 ];
 
+// ── Storage key ─────────────────────────────────────────────────────────────
+
+const CHAT_STORAGE_KEY = 'ap_auditor_chat_history_v2';
+
+const DEFAULT_WELCOME_MESSAGE: Message = {
+  id: 'welcome',
+  role: 'assistant',
+  text: "Hello! I'm your AP Auditor Copilot. I can help you review invoices, check exceptions, approve or reject flagged items, and summarise your audit metrics.\n\nTry asking: \"show me flagged invoices\" or \"give me a summary\".",
+  timestamp: new Date(),
+};
+
+const getInitialMessages = (): Message[] => {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((m: any) => ({
+          ...m,
+          timestamp: new Date(m.timestamp),
+        }));
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse stored chat history:', e);
+  }
+  return [DEFAULT_WELCOME_MESSAGE];
+};
+
 // ── Main Page ──────────────────────────────────────────────────────────────
 
 const Home: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      text: 'Hello! I\'m your AP Auditor Copilot. I can help you review invoices, check exceptions, approve or reject flagged items, and summarise your audit metrics.\n\nTry asking: "show me flagged invoices" or "give me a summary".',
-      timestamp: new Date(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>(getInitialMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [chatStatus, setChatStatus] = useState<ChatStatusResponse | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Persist messages across page navigation
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+    } catch (e) {
+      console.error('Failed to save chat history:', e);
+    }
+  }, [messages]);
+
+  const handleClearChat = useCallback(() => {
+    try {
+      localStorage.removeItem(CHAT_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    setMessages([{
+      id: `welcome-${Date.now()}`,
+      role: 'assistant',
+      text: "Chat cleared. I'm ready to review your invoices, inspect exceptions, or answer compliance queries.",
+      timestamp: new Date(),
+    }]);
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -259,11 +321,12 @@ const Home: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    addMessage('user', `📎 Uploading: ${file.name}`);
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+    addMessage('user', `📎 Uploading: ${file.name} (${sizeMb} MB)`);
     setLoading(true);
     try {
-      const summary = await uploadInvoiceCSV(file);
-      const text = `File processed successfully. ${summary.total} invoices analysed.`;
+      const summary = await uploadInvoiceCSV(file, true);
+      const text = `File processed successfully. ${summary.total.toLocaleString()} invoices analysed. Active dataset replaced.`;
       const msg: Message = {
         id: `${Date.now()}`,
         role: 'assistant',
@@ -273,8 +336,10 @@ const Home: React.FC = () => {
         data: summary as unknown as Record<string, unknown>,
       };
       setMessages((prev) => [...prev, msg]);
-    } catch {
-      addMessage('assistant', 'Upload failed. Please check the file is a valid CSV.');
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } }; message?: string };
+      const detail = axiosErr?.response?.data?.detail || axiosErr?.message || 'Please check that the file is a valid CSV.';
+      addMessage('assistant', `⚠️ Upload failed: ${detail}`);
     } finally {
       setLoading(false);
     }
@@ -296,12 +361,20 @@ const Home: React.FC = () => {
           <span className="font-semibold text-industrial-text">AP Auditor Copilot</span>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={handleClearChat}
+            title="Clear conversation history"
+            className="flex items-center gap-1 px-2 py-0.5 border border-industrial-border text-industrial-text-muted hover:border-error/50 hover:text-error text-[11px] font-mono transition-colors"
+          >
+            <Trash2 size={11} />
+            <span>Clear Chat</span>
+          </button>
           {chatStatus ? (
             chatStatus.api_key_configured && chatStatus.gemini_ready ? (
               <span className="flex items-center gap-1.5 px-2 py-0.5 border border-nominal-bright/40 bg-nominal/10 text-nominal-bright rounded-none text-[11px] font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-nominal-bright animate-pulse" />
                 <Sparkles size={11} />
-                Gemini 2.0 Flash (Tier 2 Active)
+                Gemini 2.5 Flash Lite (Tier 2 Active)
               </span>
             ) : (
               <span

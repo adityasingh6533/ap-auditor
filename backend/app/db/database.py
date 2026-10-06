@@ -38,10 +38,12 @@ def get_connection(db_path: Optional[Path | str] = None) -> sqlite3.Connection:
 
     conn = sqlite3.connect(
         str(target_path),
-        timeout=30.0,
+        timeout=60.0,
     )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
     return conn
 
 

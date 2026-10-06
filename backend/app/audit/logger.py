@@ -202,7 +202,9 @@ def save_invoice_results_batch(
 
     try:
         with conn:
-            conn.executemany(query, records)
+            chunk_size = 5000
+            for i in range(0, len(records), chunk_size):
+                conn.executemany(query, records[i:i + chunk_size])
     finally:
         if should_close:
             conn.close()
@@ -242,7 +244,9 @@ def log_decisions_batch(
 
     try:
         with conn:
-            conn.executemany(query, params_list)
+            chunk_size = 5000
+            for i in range(0, len(params_list), chunk_size):
+                conn.executemany(query, params_list[i:i + chunk_size])
     finally:
         if should_close:
             conn.close()

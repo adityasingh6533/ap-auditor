@@ -75,33 +75,42 @@ class RulesEngine:
         if df.empty:
             return []
 
+        from .config_loader import get_category_policy, get_approval_ladder, get_po_tolerance_percent
+        from .duplicate_matcher import _parse_date, _parse_float
+
+        cat_policy = get_category_policy()
+        app_ladder = get_approval_ladder()
+        po_tolerance = get_po_tolerance_percent()
+
         # 1. Initialize dataset-wide analyzers
         duplicate_matcher = DuplicateMatcher(df)
         bank_checker = BankMismatchChecker(df, on_file_profiles=self.on_file_bank_profiles, per_invoice_refs=self.per_invoice_bank_refs)
 
         results: List[Dict[str, Any]] = []
 
-        # 2. Process each invoice row
-        for idx, row in df.iterrows():
+        # 2. Process each invoice row using fast dict iteration
+        rows = df.to_dict("records") if isinstance(df, pd.DataFrame) else df
+
+        for idx, row in enumerate(rows):
             invoice_id = str(row.get("invoice_id", f"INV-{idx}")).strip()
             triggered_checks: List[Dict[str, Any]] = []
 
             # A. Required Fields (GST, PO for required categories)
-            req_flags = check_required_fields(row)
+            req_flags = check_required_fields(row, category_policy=cat_policy)
             triggered_checks.extend(req_flags)
 
             # B. Policy Spend Limit
-            limit_flag = check_policy_limit(row)
+            limit_flag = check_policy_limit(row, category_policy=cat_policy)
             if limit_flag:
                 triggered_checks.append(limit_flag)
 
             # C. Approval Authority Ladder
-            approver_flag = check_approval_authority(row)
+            approver_flag = check_approval_authority(row, approval_ladder=app_ladder)
             if approver_flag:
                 triggered_checks.append(approver_flag)
 
             # D. PO Amount Mismatch (>5% tolerance)
-            po_flag = check_po_amount_mismatch(row)
+            po_flag = check_po_amount_mismatch(row, tolerance_fraction=po_tolerance)
             if po_flag:
                 triggered_checks.append(po_flag)
 
@@ -111,14 +120,19 @@ class RulesEngine:
                 triggered_checks.append(date_flag)
 
             # F. Exact and Fuzzy Duplicates (Directional Matching)
+            vendor_str = str(row.get("vendor_name", "")).strip()
+            cat_str = str(row.get("category", "")).strip()
+            amt_val = _parse_float(row.get("amount"))
+            dt_val = _parse_date(row.get("invoice_date"))
+
             dup_record = {
                 "invoice_id": invoice_id,
-                "vendor_name": str(row.get("vendor_name", "")).strip(),
-                "vendor_normalized": str(row.get("vendor_name", "")).strip().lower(),
-                "category": str(row.get("category", "")).strip(),
-                "category_normalized": str(row.get("category", "")).strip().lower(),
-                "amount": float(str(row.get("amount", 0)).replace(",", "")) if pd.notna(row.get("amount")) else None,
-                "invoice_date": pd.to_datetime(row.get("invoice_date")).date() if pd.notna(row.get("invoice_date")) else None,
+                "vendor_name": vendor_str,
+                "vendor_normalized": vendor_str.lower(),
+                "category": cat_str,
+                "category_normalized": cat_str.lower(),
+                "amount": amt_val,
+                "invoice_date": dt_val,
             }
             dup_flags = duplicate_matcher.find_duplicates_for_invoice(dup_record)
             triggered_checks.extend(dup_flags)
@@ -131,10 +145,9 @@ class RulesEngine:
             # 3. Score and aggregate exception confidence
             scored: ScoredResult = score_invoice_exceptions(invoice_id, triggered_checks)
             res_dict = scored.to_dict()
-            res_dict["vendor_name"] = str(row.get("vendor_name", "")).strip()
-            raw_amt = row.get("amount")
-            res_dict["amount"] = float(str(raw_amt).replace(",", "").strip()) if pd.notna(raw_amt) else None
-            res_dict["category"] = str(row.get("category", "")).strip()
+            res_dict["vendor_name"] = vendor_str
+            res_dict["amount"] = amt_val
+            res_dict["category"] = cat_str
 
             # Extract matched_reference if available in triggered checks
             matched_ref = None

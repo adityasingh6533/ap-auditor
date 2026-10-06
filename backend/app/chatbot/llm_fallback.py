@@ -15,7 +15,12 @@ from typing import Any, Dict, Optional, Tuple
 import google.generativeai as genai
 
 from ..api.stats import get_stats
-from .gemini_client import clean_json_markdown, get_gemini_api_key, get_gemini_model
+from .gemini_client import (
+    call_gemini,
+    clean_json_markdown,
+    get_gemini_api_key,
+    get_gemini_model,
+)
 from .response_formatter import format_response
 
 logger = logging.getLogger(__name__)
@@ -36,7 +41,7 @@ INVOICE_REGEX = re.compile(r"\b(INV-\d+)\b", re.IGNORECASE)
 
 def classify_with_gemini(user_message: str) -> Tuple[str, Dict[str, Any]]:
     """
-    Tier 2 LLM classifier using Google Gemini (gemini-2.0-flash).
+    Tier 2 LLM classifier using Google Gemini with multi-model fallback.
     Extracts structured intent and invoice_id in strict JSON.
     Gracefully handles missing keys, network timeouts, and markdown fences.
     """
@@ -64,19 +69,17 @@ def classify_with_gemini(user_message: str) -> Tuple[str, Dict[str, Any]]:
     )
 
     try:
-        model = get_gemini_model("gemini-2.5-flash")
-        if model is None:
+        raw_text = call_gemini(
+            f"{system_prompt}\n\nUser message: {user_message}\n\nRespond in strict JSON only: {{\"intent\": string, \"invoice_id\": string or null}}"
+        )
+
+        if not raw_text:
             inv_match = INVOICE_REGEX.search(user_message)
-            entities = {"tier": 2, "llm_handled": False, "fallback_reason": "Could not initialize Gemini model."}
+            entities = {"tier": 2, "llm_handled": False, "fallback_reason": "Empty Gemini response"}
             if inv_match:
                 entities["invoice_id"] = inv_match.group(1).upper()
             return "GENERAL", entities
 
-        response = model.generate_content(
-            f"{system_prompt}\n\nUser message: {user_message}\n\nRespond in strict JSON only: {{\"intent\": string, \"invoice_id\": string or null}}"
-        )
-
-        raw_text = getattr(response, "text", "") or ""
         # Strip any markdown code fences first (Gemini sometimes wraps JSON in ```json blocks)
         cleaned_text = clean_json_markdown(raw_text)
 
@@ -127,11 +130,11 @@ DEFAULT_GUIDE = (
 
 def handle_llm_fallback(user_message: str, stats_context: Optional[Dict[str, Any]] = None) -> str:
     """
-    Calls Google Gemini gemini-2.5-flash for open-ended queries using system AP context.
+    Calls Google Gemini with automatic model failover for open-ended queries using system AP context.
     If GEMINI_API_KEY is missing, placeholder, or call fails, returns a graceful fallback guide.
     """
-    model = get_gemini_model("gemini-2.5-flash")
-    if model is None:
+    api_key = get_gemini_api_key()
+    if not api_key:
         return (
             "🤖 **AP Auditor AI Copilot**\n\n"
             "I'm currently running in **Tier 1 (Rules Engine Mode)** because a Google Gemini API key has not been configured yet.\n\n"
@@ -147,7 +150,6 @@ def handle_llm_fallback(user_message: str, stats_context: Optional[Dict[str, Any
             "• **'export report'** — generate audit report"
         )
 
-
     if not stats_context:
         try:
             stats_context = get_stats()
@@ -162,10 +164,9 @@ def handle_llm_fallback(user_message: str, stats_context: Optional[Dict[str, Any
     )
 
     try:
-        response = model.generate_content(
+        content = call_gemini(
             f"{system_prompt}\n\nUser question: {user_message}\n\nRespond helpfully and concisely."
         )
-        content = getattr(response, "text", "")
         return content.strip() if content else DEFAULT_GUIDE
 
     except Exception as e:
@@ -184,14 +185,14 @@ def generate_conversational_reply(
 ) -> str:
     """
     Generates a natural, intelligent conversational reply.
-    If Gemini is available, prompts gemini-2.5-flash to formulate a rich, business-grade
-    explanation grounded directly in the retrieved AP data.
-    If Gemini is not available, uses deterministic template formatting.
+    Prompts Gemini to formulate a rich, business-grade explanation grounded
+    directly in the retrieved AP data.
+    If Gemini is not available or encounters an error, uses deterministic template formatting.
     """
     base_reply = format_response(intent, status, raw_data)
 
-    model = get_gemini_model("gemini-2.5-flash")
-    if model is None or not raw_data or status != "SUCCESS":
+    api_key = get_gemini_api_key()
+    if not api_key or not raw_data or status != "SUCCESS":
         return base_reply
 
     system_prompt = (
@@ -212,8 +213,7 @@ def generate_conversational_reply(
     )
 
     try:
-        response = model.generate_content(prompt)
-        content = getattr(response, "text", "")
+        content = call_gemini(prompt)
         return content.strip() if content else base_reply
     except Exception:
         return base_reply

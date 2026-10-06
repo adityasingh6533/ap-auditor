@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { RefreshCw, CheckCircle, AlertTriangle, Clock, ChevronRight, Download } from 'lucide-react';
-import { fetchStats, fetchExceptions, submitDecision, downloadReport, StatsResponse, InvoiceException } from '../services/api';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { RefreshCw, CheckCircle, AlertTriangle, Clock, ChevronRight, Download, Upload, RotateCcw, Sparkles } from 'lucide-react';
+import { fetchStats, fetchExceptions, submitDecision, downloadReport, resetDataset, loadDemoDataset, uploadInvoiceCSV, StatsResponse, InvoiceException } from '../services/api';
 import { DuplicateComparisonCard } from '../components/DuplicateComparisonCard';
 
 // ── Stat Card ──────────────────────────────────────────────────────────────
@@ -54,10 +54,14 @@ const Dashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
     setError(null);
     try {
       const [s, e] = await Promise.all([fetchStats(), fetchExceptions(100)]);
@@ -66,23 +70,31 @@ const Dashboard: React.FC = () => {
     } catch {
       setError('Failed to connect to backend at http://localhost:8000. Make sure uvicorn is running.');
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    // Auto-poll every 8 seconds so uploads from Chat or other tabs update live
+    const interval = setInterval(() => {
+      load(true);
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [load]);
 
   const handleDecision = useCallback(async (invoiceId: string, decision: 'approve' | 'reject') => {
     setActionLoading(invoiceId);
     try {
       await submitDecision(invoiceId, decision, 'Dashboard User');
       setExceptions((prev) => prev.filter((e) => e.invoice_id !== invoiceId));
+      load(true);
     } catch {
-      // silently ignore — in a production system we'd show a toast
+      // silently ignore
     } finally {
       setActionLoading(null);
     }
-  }, []);
+  }, [load]);
 
   const handleExport = async (format: 'pdf' | 'csv' = 'pdf') => {
     setExporting(true);
@@ -95,38 +107,164 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const handleResetToZero = async () => {
+    if (!window.confirm('Reset database to 0 invoices? All previous data will be cleared.')) return;
+    setResetting(true);
+    try {
+      await resetDataset();
+      setSuccessToast('Dataset reset to 0 invoices. Clean workspace ready for upload.');
+      setTimeout(() => setSuccessToast(null), 5000);
+      await load();
+    } catch {
+      alert('Failed to reset dataset.');
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const handleLoadDemo = async () => {
+    setResetting(true);
+    try {
+      const summary = await loadDemoDataset();
+      setSuccessToast(`Demo dataset loaded with ${summary.total.toLocaleString()} invoices.`);
+      setTimeout(() => setSuccessToast(null), 5000);
+      await load();
+    } catch {
+      alert('Failed to load demo dataset.');
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const handleUploadFromDashboard = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setUploading(true);
+    try {
+      const summary = await uploadInvoiceCSV(file, true);
+      setSuccessToast(`Uploaded & audited ${summary.total.toLocaleString()} invoices from ${file.name}.`);
+      setTimeout(() => setSuccessToast(null), 5000);
+      await load();
+    } catch (err: any) {
+      alert(`Upload failed: ${err?.response?.data?.detail || err?.message || 'Check CSV'}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 space-y-8">
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv"
+        className="hidden"
+        onChange={handleUploadFromDashboard}
+      />
+
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-industrial-text tracking-tight">Audit Dashboard</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-industrial-text tracking-tight">Audit Dashboard</h1>
+            {stats && (
+              <span className="flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-mono bg-nominal/10 text-nominal-bright border border-nominal/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-nominal-bright animate-pulse" />
+                Live: {stats.total_processed.toLocaleString()} Invoices Audited
+              </span>
+            )}
+          </div>
           <p className="text-sm text-industrial-text-muted mt-1">Real-time compliance overview from the AP rules engine</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-accent bg-accent/10 text-accent hover:bg-accent/20 text-xs font-medium transition-colors disabled:opacity-50"
+            title="Upload CSV to replace active dataset"
+          >
+            <Upload size={13} className={uploading ? 'animate-bounce' : ''} />
+            {uploading ? 'Auditing...' : 'Upload Dataset'}
+          </button>
+          <button
+            onClick={handleResetToZero}
+            disabled={resetting}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-industrial-border text-industrial-text-muted hover:border-error/40 hover:text-error text-xs transition-colors disabled:opacity-50"
+            title="Purge all records and reset dashboard to 0"
+          >
+            <RotateCcw size={13} className={resetting ? 'animate-spin' : ''} />
+            {resetting ? 'Resetting...' : 'Reset to 0'}
+          </button>
+          <button
+            onClick={handleLoadDemo}
+            disabled={resetting}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-industrial-border text-industrial-text-muted hover:border-accent/40 hover:text-accent text-xs transition-colors disabled:opacity-50"
+            title="Load default 3,000 demo benchmark dataset"
+          >
+            <RotateCcw size={13} />
+            Load Demo (3k)
+          </button>
           <button
             onClick={() => handleExport('pdf')}
             disabled={exporting}
-            className="flex items-center gap-2 px-4 py-2 border border-accent/40 bg-accent/10 text-sm font-medium text-accent hover:bg-accent/20 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-industrial-border bg-industrial-surface text-industrial-text text-xs hover:border-accent/40 transition-colors disabled:opacity-50"
             title="Download executive PDF exception summary"
           >
-            <Download size={14} className={exporting ? 'animate-bounce' : ''} />
-            {exporting ? 'Exporting...' : 'Export Report (PDF)'}
+            <Download size={13} className={exporting ? 'animate-bounce' : ''} />
+            {exporting ? 'Exporting...' : 'Export PDF'}
           </button>
           <button
-            onClick={load}
+            onClick={() => load()}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 border border-industrial-border text-sm text-industrial-text-muted hover:border-accent/50 hover:text-accent transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-industrial-border text-xs text-industrial-text-muted hover:border-accent/50 hover:text-accent transition-colors"
           >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
             Refresh
           </button>
         </div>
       </div>
 
+      {successToast && (
+        <div className="border border-nominal/40 bg-nominal/10 text-nominal-bright text-xs px-4 py-2.5 flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <Sparkles size={14} />
+            {successToast}
+          </span>
+          <button onClick={() => setSuccessToast(null)} className="text-industrial-text-muted hover:text-industrial-text">✕</button>
+        </div>
+      )}
+
       {error && (
         <div className="border border-error/40 bg-error/10 text-error text-sm px-4 py-3">
           {error}
+        </div>
+      )}
+
+      {/* Zero invoices empty state banner */}
+      {stats && stats.total_processed === 0 && (
+        <div className="border border-industrial-border bg-industrial-surface p-6 text-center space-y-3">
+          <div className="text-industrial-text font-semibold text-sm">System Ready — Database is at 0 Invoices</div>
+          <p className="text-xs text-industrial-text-muted max-w-md mx-auto">
+            Upload your CSV dataset via the Chat Copilot or click "Upload Dataset" above. Only your uploaded dataset will be audited and displayed.
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-4 py-2 bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors flex items-center gap-1.5"
+            >
+              <Upload size={13} />
+              <span>Upload CSV Dataset</span>
+            </button>
+            <button
+              onClick={handleLoadDemo}
+              className="px-4 py-2 border border-industrial-border text-industrial-text-muted text-xs hover:border-accent/40 hover:text-accent transition-colors flex items-center gap-1.5"
+            >
+              <RotateCcw size={13} />
+              <span>Load 3,000 Demo Dataset</span>
+            </button>
+          </div>
         </div>
       )}
 
