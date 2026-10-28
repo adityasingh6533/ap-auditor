@@ -1,0 +1,68 @@
+========================================================================
+AP SENTINEL: EXTERNAL 3,000-ROW TEST SET EVALUATION REPORT (STEP 3)
+========================================================================
+Test Invoices Dataset: invoices_dataset.csv (3,000 rows, Anchor: 2026-10-03)
+Test Ground Truth:     ground_truth.csv
+Feature Strategy:      Batch-computed vendor usual banks & pair duplicate features
+
+------------------------------------------------------------------------
+MODEL 1: LOGISTIC REGRESSION
+------------------------------------------------------------------------
+Default Threshold (0.50):
+  Accuracy:          0.1960
+  Precision:         0.1289
+  Recall:            0.8238
+  F1-Score:          0.2229
+  CLEAN Specificity: 0.0938
+  ROC-AUC:           0.6264
+  PR-AUC:            0.5246
+
+Optimal Threshold (0.7600):
+  Accuracy:          0.1830
+  Precision:         0.1140
+  Recall:            0.7143
+  F1-Score:          0.1967
+  CLEAN Specificity: 0.0965
+
+Confusion Matrix at Optimal Threshold (0.76):
+                Pred Clean (0)    Pred Exception (1)
+True Clean (0)       249             2331           
+True Exception (1)   120             300            
+
+------------------------------------------------------------------------
+MODEL 2: RANDOM FOREST
+------------------------------------------------------------------------
+Default Threshold (0.50):
+  Accuracy:          0.2283
+  Precision:         0.1525
+  Recall:            0.9905
+  F1-Score:          0.2644
+  CLEAN Specificity: 0.1043
+  ROC-AUC:           0.8189
+  PR-AUC:            0.4974
+
+Optimal Threshold (0.4900):
+  Accuracy:          0.2263
+  Precision:         0.1522
+  Recall:            0.9905
+  F1-Score:          0.2639
+  CLEAN Specificity: 0.1019
+
+Confusion Matrix at Optimal Threshold (0.49):
+                Pred Clean (0)    Pred Exception (1)
+True Clean (0)       263             2317           
+True Exception (1)   4               416            
+
+------------------------------------------------------------------------
+PER-ISSUE-TYPE RECALL ON EXTERNAL 3K SET (Random Forest at Threshold 0.49):
+------------------------------------------------------------------------
+  APPROVAL_MISMATCH         : Total=30   | Caught=30   | Rate=100.0%
+  BANK_ACCOUNT_MISMATCH     : Total=30   | Caught=30   | Rate=100.0%
+  CLEAN                     : Total=2580 | Caught=263  | Rate=10.2%
+  EXACT_DUPLICATE           : Total=90   | Caught=87   | Rate=96.7%
+  FUTURE_DATED              : Total=15   | Caught=15   | Rate=100.0%
+  FUZZY_DUPLICATE           : Total=75   | Caught=74   | Rate=98.7%
+  MISSING_GST               : Total=60   | Caught=60   | Rate=100.0%
+  MISSING_PO                : Total=45   | Caught=45   | Rate=100.0%
+  OVER_LIMIT                : Total=60   | Caught=60   | Rate=100.0%
+  PO_AMOUNT_MISMATCH        : Total=15   | Caught=15   | Rate=100.0%
